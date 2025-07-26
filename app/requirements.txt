@@ -1,0 +1,11 @@
+flask
+cryptography
+pymysql
+sqlalchemy
+pyjwt
+werkzeug
+flask-bcrypt
+Authlib
+Flask-Login
+python-dotenv
+requests
