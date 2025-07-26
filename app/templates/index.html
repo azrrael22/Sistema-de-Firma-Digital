@@ -450,9 +450,7 @@
         });
 
       // Verificar firma
-      document
-        .getElementById("verificar-form")
-        .addEventListener("submit", function (event) {
+      document.getElementById("verificar-form").addEventListener("submit", function(event) {
           event.preventDefault();
           const form = event.target;
           const formData = new FormData(form);
@@ -462,11 +460,13 @@
             body: formData,
           })
             .then((response) => response.json())
-            .then((data) => {
-              if (data.valido) {
-                alert(`✅ Firma ${data.mensaje.toUpperCase()}`);
+            .then(data => {
+              if (data.error) {
+                  alert(`❌ Error: ${data.error}`);
+              } else if (data.valido) {
+                  alert(`✅ Firma ${data.mensaje.toUpperCase()}\n\n${data.detalles}`);
               } else {
-                alert(`❌ Firma ${data.mensaje.toUpperCase()}`);
+                  alert(`❌ Firma ${data.mensaje.toUpperCase()}\n\n${data.detalles}`);
               }
             })
             .catch((error) => {

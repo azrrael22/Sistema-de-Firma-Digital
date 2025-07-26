@@ -1,20 +1,21 @@
-from flask import Flask, request, render_template, send_file, jsonify, session, redirect, url_for, send_from_directory
-from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import padding
-from cryptography.hazmat.primitives import hashes
-from werkzeug.utils import secure_filename
-from authlib.integrations.flask_client import OAuth
-from flask_login import LoginManager, login_user, UserMixin, logout_user, login_required
-from dotenv import load_dotenv
-import jwt
+import datetime
 import hashlib
 import os
-import datetime
 import secrets
-from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
+
+import jwt
+from authlib.integrations.flask_client import OAuth
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives.asymmetric import rsa
+from dotenv import load_dotenv
+from flask import Flask, request, render_template, send_file, jsonify, session, redirect, url_for, send_from_directory
+from flask_login import LoginManager, UserMixin
 from sqlalchemy import create_engine, text
+from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
 
 load_dotenv()
 
@@ -532,7 +533,6 @@ def firmar_archivo():
 def descargar_firma(filename):
     return send_from_directory('firmas', filename)
 
-
 @app.route("/verificar", methods=["POST"])
 @jwt_required
 def verificar_firma():
@@ -542,54 +542,77 @@ def verificar_firma():
     if not archivo_id or not archivo_firma:
         return jsonify({"error": "Faltan datos"}), 400
 
+    # Leer la firma del archivo subido
+    firma_bytes = archivo_firma.read()
+
     with engine.connect() as conn:
-        archivo_data = conn.execute(text("""
-            SELECT a.nombre, f.usuario_id
-            FROM archivos a
-            JOIN firmas f ON f.archivo_id = a.id
-            WHERE a.id = :aid
-        """), {"aid": archivo_id}).fetchone()
+        # Obtener información del archivo
+        archivo_info = conn.execute(text("""
+                                         SELECT nombre, ruta
+                                         FROM archivos
+                                         WHERE id = :aid
+                                         """), {"aid": archivo_id}).fetchone()
 
-        if not archivo_data:
-            return jsonify({"error": "Archivo o firma no encontrada"}), 404
+        if not archivo_info:
+            return jsonify({"error": "Archivo no encontrado"}), 404
 
-        archivo_nombre, firmante_id = archivo_data
-        ruta_archivo = os.path.join("archivos", archivo_nombre)
+        archivo_nombre, ruta_archivo = archivo_info
 
+        # Leer el contenido del archivo original
         try:
             with open(ruta_archivo, "rb") as f:
                 contenido = f.read()
         except FileNotFoundError:
             return jsonify({"error": "Archivo original no encontrado en disco"}), 404
 
-        # Obtener la llave pública
-        public_key_row = conn.execute(text("""
-            SELECT llave FROM llaves_publicas WHERE user_id = :uid
-        """), {"uid": firmante_id}).fetchone()
+        # Obtener TODAS las llaves públicas de usuarios que han firmado este archivo
+        firmantes = conn.execute(text("""
+                                      SELECT DISTINCT u.username, lp.llave
+                                      FROM firmas f
+                                               JOIN usuarios u ON f.usuario_id = u.id
+                                               JOIN llaves_publicas lp ON lp.user_id = u.id
+                                      WHERE f.archivo_id = :aid
+                                      """), {"aid": archivo_id}).fetchall()
 
-        if not public_key_row:
-            return jsonify({"error": "Llave pública del firmante no encontrada"}), 404
+        if not firmantes:
+            return jsonify({"error": "No hay firmas registradas para este archivo"}), 404
 
-        llave_publica_pem = public_key_row[0]
+    # Intentar verificar con cada llave pública
+    for firmante in firmantes:
+        username, llave_publica_pem = firmante
 
-    # Verificar la firma
-    try:
-        public_key = serialization.load_pem_public_key(llave_publica_pem.encode("utf-8"))
+        try:
+            public_key = serialization.load_pem_public_key(llave_publica_pem.encode("utf-8"))
 
-        public_key.verify(
-            signature=archivo_firma.read(),
-            data=contenido,
-            padding=padding.PSS(
-                mgf=padding.MGF1(hashes.SHA256()),
-                salt_length=padding.PSS.MAX_LENGTH
-            ),
-            algorithm=hashes.SHA256()
-        )
+            # Intentar verificar la firma con esta llave pública
+            public_key.verify(
+                signature=firma_bytes,
+                data=contenido,
+                padding=padding.PSS(
+                    mgf=padding.MGF1(hashes.SHA256()),
+                    salt_length=padding.PSS.MAX_LENGTH
+                ),
+                algorithm=hashes.SHA256()
+            )
 
-        return jsonify({"valido": True, "mensaje": "válida"})
-    except Exception as e:
-        return jsonify({"valido": False, "mensaje": "inválida", "error": str(e)})
+            # Si llegamos aquí, la firma es válida
+            return jsonify({
+                "valido": True,
+                "mensaje": "válida",
+                "firmante": username,
+                "detalles": f"Firma verificada correctamente. Firmado por: {username}"
+            })
 
+        except Exception:
+            # Esta llave no corresponde a la firma, continuar con la siguiente
+            continue
+
+    # Si ninguna llave pública pudo verificar la firma
+    return jsonify({
+        "valido": False,
+        "mensaje": "inválida",
+        "detalles": "La firma no corresponde a ningún usuario que haya firmado este archivo"
+    })
 
 # --------------------------------- Nuevas rutas para compartir ---------------------------------
 @app.route("/usuarios", methods=["GET"])
